@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use napi::{
   bindgen_prelude::{AsyncTask, FnArgs, Function},
-  Either, Env, Result, Task,
+  Either, Env, Result, Task, Unknown,
 };
 use napi_derive::napi;
 
@@ -17,14 +17,12 @@ use crate::{
 
 #[napi(object)]
 pub struct Resolver {
-  // TODO async
   /** Read the given file and return its contents as a string. */
-  #[napi(ts_type = "(file: string) => string")]
-  pub read: Option<Function<'static, String, String>>,
-  // TODO async
+  #[napi(ts_type = "(file: string) => string | Promise<string>")]
+  pub read: Option<Function<'static, String, Unknown<'static>>>,
   /** Read the given file and return its contents as a string. */
-  #[napi(ts_type = "(specifier: string, originatingFile: string) => string ")]
-  pub resolve: Option<Function<'static, FnArgs<(String, String)>, String>>,
+  #[napi(ts_type = "(specifier: string, originatingFile: string) => string | Promise<string> ")]
+  pub resolve: Option<Function<'static, FnArgs<(String, String)>, Unknown<'static>>>,
 }
 
 #[napi(object)]
