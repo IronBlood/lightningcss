@@ -2,17 +2,20 @@ use std::{path::PathBuf, sync::Mutex};
 
 use crossbeam_channel::{self, Receiver, Sender};
 use lightningcss::bundler::SourceProvider;
-use napi::bindgen_prelude::FnArgs;
-use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use napi::Status;
+use napi::{
+  bindgen_prelude::{FnArgs, FromNapiValue, Promise},
+  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
+  JsValue, Status, Unknown,
+};
 
 thread_local! {
   static CHANNEL: (Sender<napi::Result<String>>, Receiver<napi::Result<String>>) = crossbeam_channel::unbounded();
 }
 pub struct JsSourceProvider {
-  pub resolve:
-    Option<ThreadsafeFunction<FnArgs<(String, String)>, String, FnArgs<(String, String)>, Status, false>>,
-  pub read: Option<ThreadsafeFunction<String, String, String, Status, false>>,
+  pub resolve: Option<
+    ThreadsafeFunction<FnArgs<(String, String)>, Unknown<'static>, FnArgs<(String, String)>, Status, false>,
+  >,
+  pub read: Option<ThreadsafeFunction<String, Unknown<'static>, String, Status, false>>,
   pub inputs: Mutex<Vec<*mut String>>,
 }
 
@@ -41,11 +44,33 @@ impl SourceProvider for JsSourceProvider {
     let source = if let Some(read) = &self.read {
       CHANNEL.with(|channel| {
         let tx = channel.0.clone();
+        let tx_cb = tx.clone();
         let file = file.to_str().unwrap().to_owned();
-        read.call_with_return_value(file, ThreadsafeFunctionCallMode::NonBlocking, move |result, _env| {
-          let _ = tx.send(result);
-          Ok(())
-        });
+        let status =
+          read.call_with_return_value(file, ThreadsafeFunctionCallMode::Blocking, move |js_result, env| {
+            let ret = match js_result {
+              Ok(v) => v,
+              Err(e) => {
+                let _ = tx_cb.send(Err(e));
+                return Ok(());
+              }
+            };
+            if ret.is_promise()? {
+              let p = Promise::<String>::from_unknown(ret)?;
+              env.spawn_future(async move {
+                let s = p.await;
+                let _ = tx_cb.send(s);
+                Ok::<(), napi::Error>(())
+              })?;
+            } else {
+              let s = String::from_unknown(ret);
+              let _ = tx_cb.send(s);
+            }
+            Ok(())
+          });
+        if status != Status::Ok {
+          let _ = tx.send(Err(napi::Error::new(status, "failed to call resolve()")));
+        }
         channel.1.recv().unwrap()
       })
     } else {
@@ -72,10 +97,32 @@ impl SourceProvider for JsSourceProvider {
         let arg: FnArgs<(String, String)> =
           (specifier.to_owned(), originating_file.to_str().unwrap().to_owned()).into();
         let tx = channel.0.clone();
-        resolve.call_with_return_value(arg, ThreadsafeFunctionCallMode::NonBlocking, move |result, _env| {
-          let _ = tx.send(result);
-          Ok(())
-        });
+        let tx_cb = tx.clone();
+        let status =
+          resolve.call_with_return_value(arg, ThreadsafeFunctionCallMode::Blocking, move |js_result, env| {
+            let ret = match js_result {
+              Ok(v) => v,
+              Err(e) => {
+                let _ = tx_cb.send(Err(e));
+                return Ok(());
+              }
+            };
+            if ret.is_promise()? {
+              let p = Promise::<String>::from_unknown(ret)?;
+              env.spawn_future(async move {
+                let s = p.await;
+                let _ = tx_cb.send(s);
+                Ok::<(), napi::Error>(())
+              })?;
+            } else {
+              let s = String::from_unknown(ret);
+              let _ = tx_cb.send(s);
+            }
+            Ok(())
+          });
+        if status != Status::Ok {
+          let _ = tx.send(Err(napi::Error::new(status, "failed to call resolve()")));
+        }
         let result = channel.1.recv().unwrap();
         match result {
           Ok(result) => Ok(PathBuf::from(result)),
