@@ -478,7 +478,7 @@ pub fn transform(options: TransformOptions) -> napi::bindgen_prelude::Result<Tra
   compile(code, &options).map_err(Into::into)
 }
 
-fn convert_exports(exports: Option<lightningcss::css_modules::CssModuleExports>) -> Option<CSSModuleExports> {
+pub fn convert_exports(exports: Option<lightningcss::css_modules::CssModuleExports>) -> Option<CSSModuleExports> {
   let exports = exports?;
 
   let out: CSSModuleExports = exports.into_iter().map(|(k, v)| (k, v.into())).collect();
@@ -496,7 +496,7 @@ impl From<lightningcss::css_modules::CssModuleExport> for CSSModuleExport {
   }
 }
 
-fn convert_references(
+pub fn convert_references(
   references: Option<lightningcss::css_modules::CssModuleReferences>,
 ) -> Option<CSSModuleReferences> {
   references.map(|m| {
@@ -526,7 +526,7 @@ fn convert_references(
   })
 }
 
-fn convert_dependencies(
+pub fn convert_dependencies(
   dependencies: Option<Vec<lightningcss::dependencies::Dependency>>,
 ) -> Option<Vec<Either<ImportDependency, UrlDependency>>> {
   let dependencies = dependencies?;

@@ -60,6 +60,12 @@ impl<'i, E: std::error::Error> From<parcel_sourcemap::SourceMapError> for Compil
   }
 }
 
+impl<'i, E: std::error::Error> From<Error<BundleErrorKind<'i, E>>> for CompileError<'i, E> {
+  fn from(e: Error<BundleErrorKind<'i, E>>) -> CompileError<'i, E> {
+    CompileError::BundleError(e)
+  }
+}
+
 impl<'i, E: std::error::Error> From<napi::Error> for CompileError<'i, E> {
   fn from(e: napi::Error) -> Self {
     CompileError::JsError(e)
