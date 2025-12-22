@@ -8,6 +8,7 @@ use napi_derive::napi;
 
 use crate::{
   bundle::{compile_bundle, BundleOptions},
+  compile_error::CompileErrorOwned,
   custom_at_rules::CustomAtRules,
   js_source_provider::JsSourceProvider,
   transform::{
@@ -99,21 +100,21 @@ pub struct BundleTask {
 }
 
 impl Task for BundleTask {
-  type Output = TransformResult;
+  type Output = std::result::Result<TransformResult, CompileErrorOwned>;
   type JsValue = TransformResult;
 
   fn compute(&mut self) -> napi::Result<Self::Output> {
-    compile_bundle(&self.provider, &self.options).map_err(Into::into)
+    Ok(compile_bundle(&self.provider, &self.options).map_err(Into::into))
   }
 
-  fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-    Ok(output)
+  fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+    match output {
+      Ok(v) => Ok(v),
+      Err(e) => Err(e.into_js_error(env, None)?),
+    }
   }
 }
 
-// NOTE since the resolver now only accept synchronized callbacks,
-//      here the `async` function is NOT a real async one. But might
-//      be fixed later
 #[napi]
 pub fn bundle_async(options: BundleAsyncOptions) -> Result<AsyncTask<BundleTask>> {
   let BundleAsyncOptions {
