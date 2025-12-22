@@ -1,4 +1,5 @@
 use crate::at_rule_parser::CustomAtRuleParser;
+use crate::compile_error::CompileErrorOwned;
 use crate::css_module_reference::convert_css_module_ref;
 use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::targets::{
@@ -7,6 +8,7 @@ use lightningcss::targets::{
   Targets,
 };
 use napi::bindgen_prelude::{Either, Uint8Array};
+use napi::Env;
 use parcel_sourcemap::SourceMap;
 use std::sync::{Arc, RwLock};
 
@@ -472,10 +474,17 @@ fn compile<'i>(
 }
 
 #[napi]
-pub fn transform(options: TransformOptions) -> napi::bindgen_prelude::Result<TransformResult> {
+pub fn transform(env: Env, options: TransformOptions) -> napi::bindgen_prelude::Result<TransformResult> {
   let code =
     std::str::from_utf8(&options.code).map_err(|e| napi::Error::new(napi::Status::InvalidArg, e.to_string()))?;
-  compile(code, &options).map_err(Into::into)
+  let result = compile(code, &options);
+  match result {
+    Ok(v) => Ok(v),
+    Err(err) => {
+      let owned: CompileErrorOwned = err.into();
+      Err(owned.into_js_error(env, None)?)
+    }
+  }
 }
 
 pub fn convert_exports(exports: Option<lightningcss::css_modules::CssModuleExports>) -> Option<CSSModuleExports> {

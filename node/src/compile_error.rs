@@ -74,6 +74,7 @@ impl<'i, E: std::error::Error> From<napi::Error> for CompileError<'i, E> {
   }
 }
 
+// TODO remove?
 impl<'i> From<CompileError<'i, napi::Error>> for napi::Error {
   fn from(e: CompileError<'i, napi::Error>) -> Self {
     match e {

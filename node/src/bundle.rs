@@ -8,14 +8,14 @@ use lightningcss::{
 };
 use napi::{
   bindgen_prelude::{FnArgs, Function},
-  Either,
+  Either, Env,
 };
 use napi_derive::napi;
 use parcel_sourcemap::SourceMap;
 
 use crate::{
   at_rule_parser::CustomAtRuleParser,
-  compile_error::CompileError,
+  compile_error::{CompileError, CompileErrorOwned},
   custom_at_rules::CustomAtRules,
   js_source_provider::JsSourceProvider,
   transform::{
@@ -238,11 +238,18 @@ pub fn compile_bundle<
 }
 
 #[napi]
-pub fn bundle(options: BundleOptions) -> napi::bindgen_prelude::Result<TransformResult> {
+pub fn bundle(env: Env, options: BundleOptions) -> napi::bindgen_prelude::Result<TransformResult> {
   let provider = JsSourceProvider {
     resolve: None,
     read: None,
     inputs: Mutex::new(Vec::new()),
   };
-  compile_bundle(&provider, &options).map_err(Into::into)
+  let result = compile_bundle(&provider, &options);
+  match result {
+    Ok(v) => Ok(v),
+    Err(err) => {
+      let owned: CompileErrorOwned = err.into();
+      Err(owned.into_js_error(env, None)?)
+    }
+  }
 }
