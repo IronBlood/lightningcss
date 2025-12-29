@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use lightningcss::{
   bundler::{Bundler, SourceProvider},
   printer::PrinterOptions,
-  stylesheet::{MinifyOptions, ParserFlags, ParserOptions},
+  stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleSheet},
   targets::{Features, Targets},
+  visitor::Visit,
 };
 use napi::{
   bindgen_prelude::{FnArgs, Function},
@@ -14,7 +15,7 @@ use napi_derive::napi;
 use parcel_sourcemap::SourceMap;
 
 use crate::{
-  at_rule_parser::CustomAtRuleParser,
+  at_rule_parser::{AtRule, CustomAtRuleParser},
   compile_error::{CompileError, CompileErrorOwned},
   custom_at_rules::CustomAtRules,
   js_source_provider::JsSourceProvider,
@@ -22,6 +23,7 @@ use crate::{
     convert_dependencies, convert_exports, convert_references, Browsers, CSSModulesConfig, DependencyOptions,
     Drafts, NonStandard, PseudoClasses, TransformResult, Visitor,
   },
+  transformer::get_visitor,
 };
 
 #[napi(object)]
@@ -103,11 +105,13 @@ pub struct Resolver {
 
 pub fn compile_bundle<
   'i,
-  P: SourceProvider, /* TODO F: FnOnce(&mut StyleSheet<'i, 'o, AtRule<'i>>) -> napi::Result()*/
+  'o,
+  P: SourceProvider,
+  F: FnOnce(&mut StyleSheet<'i, 'o, AtRule<'i>>) -> napi::Result<()>,
 >(
   fs: &'i P,
-  config: &BundleOptions,
-  // visit: Option<F>, TODO
+  config: &'o BundleOptions,
+  visit: Option<F>,
 ) -> Result<TransformResult, CompileError<'i, P::Error>> {
   use std::path::Path;
 
@@ -178,9 +182,9 @@ pub fn compile_bundle<
       Bundler::new_with_at_rule_parser(fs, source_map.as_mut(), parser_options, &mut at_rule_parser);
     let mut stylesheet = bundler.bundle(Path::new(&config.filename))?;
 
-    // if let Some(visit) = visit {
-    //   visit(&mut stylesheet).map_err(CompileError::JsError)?;
-    // }
+    if let Some(visit) = visit {
+      visit(&mut stylesheet).map_err(CompileError::JsError)?;
+    }
 
     let targets = Targets {
       browsers: config.targets.as_ref().map(Into::into),
@@ -239,12 +243,27 @@ pub fn compile_bundle<
 
 #[napi]
 pub fn bundle(env: Env, options: BundleOptions) -> napi::bindgen_prelude::Result<TransformResult> {
+  let mut visitor = get_visitor(env, &options.visitor)?;
   let provider = JsSourceProvider {
     resolve: None,
     read: None,
     inputs: Mutex::new(Vec::new()),
   };
-  let result = compile_bundle(&provider, &options);
+
+  // This is pretty silly, but works around a rust limitation that you cannot
+  // explicitly annotate lifetime bounds on closures.
+  fn annotate<'i, 'o, F>(f: F) -> F
+  where
+    F: FnOnce(&mut StyleSheet<'i, 'o, AtRule<'i>>) -> napi::Result<()>,
+  {
+    f
+  }
+
+  let result = compile_bundle(
+    &provider,
+    &options,
+    visitor.as_mut().map(|visitor| annotate(|stylesheet| stylesheet.visit(visitor))),
+  );
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
