@@ -1,14 +1,15 @@
 use crate::at_rule_parser::CustomAtRuleParser;
 use crate::compile_error::CompileErrorOwned;
 use crate::css_module_reference::convert_css_module_ref;
+use crate::transformer::{get_visitor, JsVisitor, JsVisitorCallback, JsVisitorCallbackMap};
 use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::targets::{
   // Browsers,
   Features,
   Targets,
 };
-use napi::bindgen_prelude::{Either, Uint8Array};
-use napi::Env;
+use napi::bindgen_prelude::{Either, Function, Uint8Array};
+use napi::{Env, Unknown};
 use parcel_sourcemap::SourceMap;
 use std::sync::{Arc, RwLock};
 
@@ -110,40 +111,122 @@ pub struct DependencyOptions {
   pub preserve_imports: Option<bool>,
 }
 
-// TODO v2
-type VisitorsRef = String;
-
-#[napi(object)]
-pub struct TODORef {}
-// NOTE from napi/src/transformer.rs
+// TODO update ts_type
+// TODO use `JsCb` (maybe rename)
 #[napi(object)]
 pub struct Visitor {
-  pub visit_stylesheet: VisitorsRef,
-  pub visit_rule: VisitorsRef,
-  pub rule_map: VisitorsRef,
-  pub property_map: VisitorsRef,
-  pub visit_declaration: VisitorsRef,
-  pub visit_length: Option<TODORef>,
-  pub visit_angle: Option<TODORef>,
-  pub visit_ratio: Option<TODORef>,
-  pub visit_resolution: Option<TODORef>,
-  pub visit_time: Option<TODORef>,
-  pub visit_color: Option<TODORef>,
-  pub visit_image: VisitorsRef,
-  pub visit_url: Option<TODORef>,
-  pub visit_media_query: VisitorsRef,
-  pub visit_supports_condition: VisitorsRef,
-  pub visit_custom_ident: Option<TODORef>,
-  pub visit_dashed_ident: Option<TODORef>,
-  pub visit_selector: Option<TODORef>,
-  pub visit_token: VisitorsRef,
-  pub token_map: VisitorsRef,
-  pub visit_function: VisitorsRef,
-  pub function_map: VisitorsRef,
-  pub visit_variable: VisitorsRef,
-  pub visit_env: VisitorsRef,
-  pub env_map: VisitorsRef,
-  pub types: u32,
+  #[napi(
+    js_name = "StyleSheet",
+    ts_type = "((stylesheet: StyleSheet) => StyleSheet<ReturnedDeclaration, ReturnedMediaQuery> | void) | void"
+  )]
+  pub stylesheet: Option<JsVisitorCallback>,
+  #[napi(
+    js_name = "StyleSheetExit",
+    ts_type = "((stylesheet: StyleSheet) => StyleSheet<ReturnedDeclaration, ReturnedMediaQuery> | void) | void"
+  )]
+  pub stylesheet_exit: Option<JsVisitorCallback>,
+  #[napi(
+    js_name = "Rule",
+    ts_type = "((rule: RequiredValue<Rule>) => ReturnedRule | ReturnedRule[] | void) | void"
+  )]
+  pub rule: Option<Either<JsVisitorCallback, HashMap<String, JsVisitorCallback>>>,
+  #[napi(
+    js_name = "RuleExit",
+    ts_type = "((rule: RequiredValue<Rule>) => ReturnedRule | ReturnedRule[] | void) | void"
+  )]
+  pub rule_exit: Option<Either<JsVisitorCallback, HashMap<String, JsVisitorCallback>>>,
+  #[napi(
+    js_name = "Declaration",
+    ts_type = "((property: Declaration) => ReturnedDeclaration | ReturnedDeclaration[] | void) | void"
+  )]
+  pub declaration: Option<Either<JsVisitorCallback, HashMap<String, JsVisitorCallback>>>,
+  #[napi(
+    js_name = "DeclarationExit",
+    ts_type = "((property: Declaration) => ReturnedDeclaration | ReturnedDeclaration[] | void) | void"
+  )]
+  pub declaration_exit: Option<Either<JsVisitorCallback, HashMap<String, JsVisitorCallback>>>,
+  #[napi(js_name = "Url", ts_type = "((url: Url) => Url | void) | void")]
+  pub url: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "Color", ts_type = "((color: CssColor) => CssColor | void) | void")]
+  pub color: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "Image", ts_type = "((image: Image) => Image | void) | void")]
+  pub image: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "ImageExit", ts_type = "((image: Image) => Image | void) | void")]
+  pub image_exit: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "Length", ts_type = "((length: LengthValue) => LengthValue | void) | void")]
+  pub length: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "Angle", ts_type = "((angle: Angle) => Angle | void) | void")]
+  pub angle: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "Ratio", ts_type = "((ratio: Ratio) => Ratio | void) | void")]
+  pub ratio: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "Resolution",
+    ts_type = "((resolution: Resolution) => Resolution | void) | void"
+  )]
+  pub resolution: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "Time", ts_type = "((time: Time) => Time | void) | void")]
+  pub time: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "CustomIdent", ts_type = "((ident: string) => string | void) | void")]
+  pub custom_ident: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(js_name = "DashedIdent", ts_type = "((ident: string) => string | void) | void")]
+  pub dashed_ident: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "MediaQuery",
+    ts_type = "((query: MediaQuery) => ReturnedMediaQuery | ReturnedMediaQuery[] | void) | void"
+  )]
+  pub media_query: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "MediaQueryExit",
+    ts_type = "((query: MediaQuery) => ReturnedMediaQuery | ReturnedMediaQuery[] | void) | void"
+  )]
+  pub media_query_exit: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "SupportsCondition",
+    ts_type = "((condition: SupportsCondition) => SupportsCondition) | void"
+  )]
+  pub supports_condition: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "SupportsCondition",
+    ts_type = "((condition: SupportsCondition) => SupportsCondition) | void"
+  )]
+  pub supports_condition_exit: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "Selector",
+    ts_type = "((selector: Selector) => Selector | Selector[] | void) | void"
+  )]
+  pub selector: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "Token",
+    ts_type = "(token: Token) => TokenReturnValue | Record<VisitableTokenTypes, (token: FindByType<Token, Name>) => TokenReturnValue> | void"
+  )]
+  pub token: Option<Either<JsVisitorCallback, HashMap<String, JsVisitorCallback>>>,
+  #[napi(
+    js_name = "Function",
+    ts_type = "FunctionVisitor | Record<string, FunctionVisitor> | void "
+  )]
+  pub function: Option<Either<JsVisitorCallback, HashMap<String, JsVisitorCallback>>>,
+  #[napi(
+    js_name = "FunctionExit",
+    ts_type = "FunctionVisitor | Record<string, FunctionVisitor> | void "
+  )]
+  pub function_exit: Option<Either<JsVisitorCallback, HashMap<String, JsVisitorCallback>>>,
+  #[napi(js_name = "Variable", ts_type = "((variable: Variable) => TokenReturnValue) | void")]
+  pub variable: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "VariableExit",
+    ts_type = "((variable: Variable) => TokenReturnValue) | void"
+  )]
+  pub variable_exit: Option<Function<'static, Unknown<'static>, Option<Unknown<'static>>>>,
+  #[napi(
+    js_name = "EnvironmentVariable",
+    ts_type = "EnvironmentVariableVisitor | Record<string, EnvironmentVariableVisitor> | void"
+  )]
+  pub environment_variable: Option<Either<JsVisitorCallback, JsVisitorCallbackMap>>,
+  #[napi(
+    js_name = "EnvironmentVariable",
+    ts_type = "EnvironmentVariableVisitor | Record<string, EnvironmentVariableVisitor> | void"
+  )]
+  pub environment_variable_exit: Option<Either<JsVisitorCallback, JsVisitorCallbackMap>>,
 }
 
 // NOTE see `Config` from `napi/src/lib.rs`
@@ -333,6 +416,7 @@ pub struct TransformResult {
 fn compile<'i>(
   code: &'i str,
   config: &TransformOptions,
+  visitor: &mut Option<JsVisitor>, // TODO feature gated
 ) -> Result<TransformResult, CompileError<'i, napi::Error>> {
   let drafts = config.drafts.as_ref();
   let non_standard = config.non_standard.as_ref();
@@ -407,9 +491,11 @@ fn compile<'i>(
 
     // TODO
     // #[cfg(feature = "visitor")]
-    // if let Some(visitor) = visitor.as_mut() {
-    //   stylesheet.visit(visitor).map_err(CompileError::JsError)?;
-    // }
+    if let Some(visitor) = visitor.as_mut() {
+      use lightningcss::visitor::Visit;
+
+      stylesheet.visit(visitor).map_err(CompileError::JsError)?;
+    }
 
     let targets = Targets {
       browsers: config.targets.as_ref().map(Into::into),
@@ -475,9 +561,10 @@ fn compile<'i>(
 
 #[napi]
 pub fn transform(env: Env, options: TransformOptions) -> napi::bindgen_prelude::Result<TransformResult> {
+  let mut visitor = get_visitor(env, &options.visitor)?;
   let code =
     std::str::from_utf8(&options.code).map_err(|e| napi::Error::new(napi::Status::InvalidArg, e.to_string()))?;
-  let result = compile(code, &options);
+  let result = compile(code, &options, &mut visitor);
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
