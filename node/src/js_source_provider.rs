@@ -1,11 +1,19 @@
 use std::{path::PathBuf, sync::Mutex};
 
 use crossbeam_channel::{self, Receiver, Sender};
-use lightningcss::bundler::SourceProvider;
+use lightningcss::{bundler::SourceProvider, stylesheet::StyleSheet, visitor::Visit};
 use napi::{
-  bindgen_prelude::{FnArgs, FromNapiValue, Promise},
+  bindgen_prelude::{FnArgs, FromNapiValue, Function, Object, Promise},
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
-  JsValue, Status, Unknown,
+  Env, JsValue, Status, Unknown,
+};
+
+use crate::{
+  at_rule_parser::AtRule,
+  bundle::{compile_bundle, BundleConfig},
+  compile_error::CompileErrorOwned,
+  transform::TransformResult,
+  transformer::JsVisitor,
 };
 
 thread_local! {
@@ -132,4 +140,81 @@ impl SourceProvider for JsSourceProvider {
     }
     Ok(originating_file.with_file_name(specifier))
   }
+}
+
+struct VisitMessage {
+  stylesheet: &'static mut StyleSheet<'static, 'static, AtRule<'static>>,
+  tx: Sender<napi::Result<String>>,
+}
+
+// Runs bundling on a background thread managed by rayon. This is similar to AsyncTask from napi-rs, however,
+// because we call back into the JS thread, which might call other tasks in the node threadpool (e.g. fs.readFile),
+// we may end up deadlocking if the number of rayon threads exceeds node's threadpool size. Therefore, we must
+// run bundling from a thread not managed by Node.
+pub fn run_bundle_task<P>(
+  provider: P,
+  config: BundleConfig,
+  visitor: Option<JsVisitor>,
+  env: Env,
+) -> napi::Result<Object<'static>>
+where
+  P: 'static + SourceProvider<Error = napi::Error>,
+{
+  let (deferred, promise) = env.create_deferred::<TransformResult, _>()?;
+
+  // NOTE WARN Detach the lifetime from `&env` borrow. (By ChatGPT)
+  // SAFETY: this is an N-API value; the `'env` lifetime is only a Rust typing constraint.
+  let promise: Object<'static> = unsafe { std::mem::transmute::<Object<'_>, Object<'static>>(promise) };
+  let noop: Function<(), ()> = env.create_function_from_closure("lightningcssVisitNoop", |_ctx| Ok(()))?;
+  let tsfn = if let Some(mut visitor) = visitor {
+    Some(
+      noop.build_threadsafe_function::<VisitMessage>().build_callback(move |ctx| {
+        if let Err(err) = ctx.value.stylesheet.visit(&mut visitor) {
+          ctx.value.tx.send(Err(err)).expect("send error");
+          return Ok(());
+        }
+        ctx.value.tx.send(Ok(Default::default())).expect("send error");
+        Ok(())
+      })?,
+    )
+  } else {
+    None
+  };
+
+  rayon::spawn(move || {
+    let res = compile_bundle(
+      unsafe { std::mem::transmute::<&'_ P, &'static P>(&provider) },
+      &config,
+      tsfn.map(move |tsfn| {
+        move |stylesheet: &mut StyleSheet<AtRule>| {
+          CHANNEL.with(|channel| {
+            let message = VisitMessage {
+              // SAFETY: we immediately lock the thread until we get a response,
+              // so stylesheet cannot be dropped in that time.
+              stylesheet: unsafe {
+                std::mem::transmute::<
+                  &'_ mut StyleSheet<'_, '_, AtRule>,
+                  &'static mut StyleSheet<'static, 'static, AtRule>,
+                >(stylesheet)
+              },
+              tx: channel.0.clone(),
+            };
+
+            tsfn.call(message, ThreadsafeFunctionCallMode::Blocking);
+            channel.1.recv().expect("recv error").map(|_| ())
+          })
+        }
+      }),
+    );
+
+    deferred.resolve(move |env| match res {
+      Ok(v) => Ok(v),
+      Err(err) => {
+        let owned: CompileErrorOwned = err.into();
+        Err(owned.into_js_error(env, None)?)
+      }
+    });
+  });
+
+  Ok(promise)
 }
