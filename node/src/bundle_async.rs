@@ -1,19 +1,17 @@
 use std::sync::Mutex;
 
 use napi::{
-  bindgen_prelude::{AsyncTask, FnArgs, Function},
-  Either, Env, Result, Task, Unknown,
+  bindgen_prelude::{FnArgs, Function, Object},
+  Either, Env, Result, Unknown,
 };
 use napi_derive::napi;
 
 use crate::{
-  bundle::{compile_bundle, BundleOptions},
-  compile_error::CompileErrorOwned,
+  bundle::BundleConfig,
   custom_at_rules::CustomAtRules,
-  js_source_provider::JsSourceProvider,
-  transform::{
-    Browsers, CSSModulesConfig, DependencyOptions, Drafts, NonStandard, PseudoClasses, TransformResult, Visitor,
-  },
+  js_source_provider::{run_bundle_task, JsSourceProvider},
+  transform::{Browsers, CSSModulesConfig, DependencyOptions, Drafts, NonStandard, PseudoClasses, Visitor},
+  transformer::get_visitor,
 };
 
 #[napi(object)]
@@ -94,29 +92,8 @@ pub struct BundleAsyncOptions {
   pub resolver: Option<Resolver>,
 }
 
-pub struct BundleTask {
-  provider: JsSourceProvider,
-  options: BundleOptions,
-}
-
-impl Task for BundleTask {
-  type Output = std::result::Result<TransformResult, CompileErrorOwned>;
-  type JsValue = TransformResult;
-
-  fn compute(&mut self) -> napi::Result<Self::Output> {
-    Ok(compile_bundle(&self.provider, &self.options).map_err(Into::into))
-  }
-
-  fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-    match output {
-      Ok(v) => Ok(v),
-      Err(e) => Err(e.into_js_error(env, None)?),
-    }
-  }
-}
-
-#[napi]
-pub fn bundle_async(options: BundleAsyncOptions) -> Result<AsyncTask<BundleTask>> {
+#[napi(ts_return_type = "Promise<TransformResult>")]
+pub fn bundle_async(env: Env, options: BundleAsyncOptions) -> Result<Object<'static>> {
   let BundleAsyncOptions {
     filename,
     minify,
@@ -138,7 +115,7 @@ pub fn bundle_async(options: BundleAsyncOptions) -> Result<AsyncTask<BundleTask>
     resolver,
   } = options;
 
-  let bo = BundleOptions {
+  let config = BundleConfig {
     filename,
     minify,
     source_map,
@@ -154,11 +131,11 @@ pub fn bundle_async(options: BundleAsyncOptions) -> Result<AsyncTask<BundleTask>
     pseudo_classes,
     unused_symbols,
     error_recovery,
-    visitor,
     custom_at_rules,
   };
 
   let inputs = Mutex::new(Vec::new());
+  let visitor = get_visitor(env, &visitor)?;
   let provider = match resolver.as_ref() {
     Some(r) => JsSourceProvider {
       resolve: match &r.resolve {
@@ -178,5 +155,5 @@ pub fn bundle_async(options: BundleAsyncOptions) -> Result<AsyncTask<BundleTask>
     },
   };
 
-  Ok(AsyncTask::new(BundleTask { provider, options: bo }))
+  run_bundle_task(provider, config, visitor, env)
 }

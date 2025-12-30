@@ -93,6 +93,26 @@ pub struct BundleOptions {
   pub custom_at_rules: Option<CustomAtRules>, // TODO generic?
 }
 
+// BundleOptions without visitors
+pub struct BundleConfig {
+  pub filename: String,
+  pub minify: Option<bool>,
+  pub source_map: Option<bool>,
+  pub input_source_map: Option<String>,
+  pub project_root: Option<String>,
+  pub targets: Option<Browsers>,
+  pub include: Option<u32>,
+  pub exclude: Option<u32>,
+  pub drafts: Option<Drafts>,
+  pub non_standard: Option<NonStandard>,
+  pub css_modules: Option<Either<bool, CSSModulesConfig>>,
+  pub analyze_dependencies: Option<Either<bool, DependencyOptions>>,
+  pub pseudo_classes: Option<PseudoClasses>,
+  pub unused_symbols: Option<Vec<String>>,
+  pub error_recovery: Option<bool>,
+  pub custom_at_rules: Option<CustomAtRules>,
+}
+
 #[napi(object)]
 pub struct Resolver {
   /** Read the given file and return its contents as a string. */
@@ -110,7 +130,7 @@ pub fn compile_bundle<
   F: FnOnce(&mut StyleSheet<'i, 'o, AtRule<'i>>) -> napi::Result<()>,
 >(
   fs: &'i P,
-  config: &'o BundleOptions,
+  config: &'o BundleConfig,
   visit: Option<F>,
 ) -> Result<TransformResult, CompileError<'i, P::Error>> {
   use std::path::Path;
@@ -243,7 +263,47 @@ pub fn compile_bundle<
 
 #[napi]
 pub fn bundle(env: Env, options: BundleOptions) -> napi::bindgen_prelude::Result<TransformResult> {
-  let mut visitor = get_visitor(env, &options.visitor)?;
+  let BundleOptions {
+    filename,
+    minify,
+    source_map,
+    input_source_map,
+    project_root,
+    targets,
+    include,
+    exclude,
+    drafts,
+    non_standard,
+    css_modules,
+    analyze_dependencies,
+    pseudo_classes,
+    unused_symbols,
+    error_recovery,
+    visitor,
+    custom_at_rules,
+  } = options;
+
+  let mut visitor = get_visitor(env, &visitor)?;
+
+  let config = BundleConfig {
+    filename,
+    minify,
+    source_map,
+    input_source_map,
+    project_root,
+    targets,
+    include,
+    exclude,
+    drafts,
+    non_standard,
+    css_modules,
+    analyze_dependencies,
+    pseudo_classes,
+    unused_symbols,
+    error_recovery,
+    custom_at_rules,
+  };
+
   let provider = JsSourceProvider {
     resolve: None,
     read: None,
@@ -261,7 +321,7 @@ pub fn bundle(env: Env, options: BundleOptions) -> napi::bindgen_prelude::Result
 
   let result = compile_bundle(
     &provider,
-    &options,
+    &config,
     visitor.as_mut().map(|visitor| annotate(|stylesheet| stylesheet.visit(visitor))),
   );
   match result {
