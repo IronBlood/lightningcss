@@ -397,6 +397,9 @@ pub struct UrlDependency {
   pub placeholder: String,
 }
 
+#[napi]
+pub type Dependency = Either<ImportDependency, UrlDependency>;
+
 #[napi(object)]
 pub struct TransformResult {
   /** The transformed code. */
@@ -408,7 +411,7 @@ pub struct TransformResult {
   /** CSS module references, if `dashedIdents` is enabled. */
   pub references: Option<CSSModuleReferences>,
   /** `@import` and `url()` dependencies, if enabled. */
-  pub dependencies: Option<Vec<Either<ImportDependency, UrlDependency>>>,
+  pub dependencies: Option<Vec<Dependency>>,
   /** Warnings that occurred during compilation. */
   pub warnings: Vec<Warning>,
 }
