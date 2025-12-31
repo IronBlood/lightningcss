@@ -18,8 +18,8 @@ use lightningcss::{
   visitor::{Visit, VisitTypes, Visitor},
 };
 use napi::{
-  bindgen_prelude::{Function, FunctionRef},
-  Either, Env, Unknown,
+  bindgen_prelude::{FromNapiValue, Function, FunctionRef, Object, ToNapiValue},
+  Either, Env, Unknown, ValueType,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -37,6 +37,7 @@ pub fn get_visitor(env: Env, opts: &Option<VisitorOpt>) -> napi::Result<Option<J
 pub type JsVisitorCallback = Function<'static, Unknown<'static>, Option<Unknown<'static>>>;
 pub type JsVisitorCallbackMap = HashMap<String, JsVisitorCallback>;
 type JsVisitorCallbackRef = FunctionRef<Unknown<'static>, Option<Unknown<'static>>>;
+type JsVisitorCallbackEnv<'env> = Function<'env, Unknown<'env>, Option<Unknown<'env>>>;
 
 pub struct JsVisitor {
   env: Env,
@@ -123,11 +124,36 @@ impl Visitors<HashMap<String, JsVisitorCallbackRef>> {
     self.for_stage(stage)?.get(name)
   }
 
-  // FIXME this `custom` is only applied to `rule_map`, the values binded to
-  // `"unknown"` and `"custom"` might be either functions or map-liked objects,
-  // but at this phase, they're treated as functions just for development.
-  fn custom(&self, stage: VisitStage, obj: &str, _name: &str) -> Option<&JsVisitorCallbackRef> {
-    self.for_stage(stage)?.get(obj)
+  fn custom<'env>(
+    &self,
+    env: &'env Env,
+    stage: VisitStage,
+    obj: &str,
+    name: &str,
+  ) -> napi::Result<Option<JsVisitorCallbackEnv<'env>>> {
+    let r = match self.for_stage(stage).and_then(|m| m.get(obj)) {
+      Some(r) => r,
+      None => return Ok(None),
+    };
+
+    let u = r.borrow_back(env)?.into_unknown(env)?;
+
+    match u.get_type()? {
+      ValueType::Function => Ok(Some(Function::from_unknown(u)?)),
+      ValueType::Object => {
+        let o = Object::from_unknown(u)?;
+        if let Some(v) = o.get::<Unknown>(name)? {
+          if v.get_type()? == ValueType::Function {
+            Ok(Some(Function::from_unknown(v)?))
+          } else {
+            Ok(None)
+          }
+        } else {
+          Ok(None)
+        }
+      }
+      _ => Ok(None),
+    }
   }
 }
 
@@ -363,13 +389,11 @@ impl<'i> Visitor<'i, AtRule<'i>> for JsVisitor {
           CssRule::ViewTransition(..) => "view-transition",
           CssRule::Unknown(v) => {
             let name = v.name.as_ref();
-            // FIXME see the method `.custom`
-            if let Some(visit) = this.rule_map.custom(stage, "unknown", name) {
-              let visit = visit.borrow_back(&env)?;
+            if let Some(visit) = this.rule_map.custom(&env, stage, "unknown", name)? {
               let js_value: Unknown = env.to_js_value(v)?;
               let res = visit.call(js_value)?;
               if let Some(res) = res {
-                env.from_js_value(res).map(serde_detach::detach)?
+                return env.from_js_value(res).map(serde_detach::detach);
               } else {
                 "unknown"
               }
@@ -379,13 +403,11 @@ impl<'i> Visitor<'i, AtRule<'i>> for JsVisitor {
           }
           CssRule::Custom(c) => {
             let name = c.name.as_ref();
-            // FIXME see the method `.custom`
-            if let Some(visit) = this.rule_map.custom(stage, "custom", name) {
-              let visit = visit.borrow_back(&env)?;
+            if let Some(visit) = this.rule_map.custom(&env, stage, "custom", name)? {
               let js_value: Unknown = env.to_js_value(c)?;
               let res = visit.call(js_value)?;
               if let Some(res) = res {
-                env.from_js_value(res).map(serde_detach::detach)?
+                return env.from_js_value(res).map(serde_detach::detach);
               } else {
                 "custom"
               }
@@ -701,10 +723,9 @@ fn visit_declaration_list<'i, C: FnMut(&mut JsVisitor, &mut Property<'i>) -> nap
       let env = this.env;
       let visit = match value {
         Property::Custom(v) => {
-          // FIXME see .custom
-          if let Some(visit) = this.property_map.custom(stage, "custom", v.name.as_ref()) {
+          if let Some(visit) = this.property_map.custom(&env, stage, "custom", v.name.as_ref())? {
             let js_value = env.to_js_value(v)?;
-            let res = visit.borrow_back(&this.env)?.call(js_value)?;
+            let res = visit.call(js_value)?;
             if let Some(res) = res {
               return env.from_js_value(res).map(serde_detach::detach);
             } else {
