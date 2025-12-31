@@ -1,5 +1,5 @@
 use lightningcss::values::syntax::SyntaxString;
-use napi::Status;
+use napi::{bindgen_prelude::Null, Either, Status};
 use napi_derive::napi;
 use std::collections::HashMap;
 
@@ -50,7 +50,7 @@ pub struct CustomAtRuleDefinition {
    * set to null to indicate that no prelude is accepted.
    */
   #[napi(ts_type = "`<${PreludeTypes}>` | `<${PreludeTypes}>+` | `<${PreludeTypes}>#` | (string & {})")]
-  pub prelude: Option<String>,
+  pub prelude: Option<Either<String, Null>>,
   /**
    * Defines the type of body contained within the at-rule block.
    *   - declaration-list: A CSS declaration list, as in a style rule.
@@ -77,7 +77,10 @@ impl TryFrom<CustomAtRuleDefinition> for CustomAtRuleConfig {
       _ => None,
     };
     Ok(CustomAtRuleConfig {
-      prelude: parse_prelude(def.prelude)?,
+      prelude: parse_prelude(match def.prelude {
+        Some(Either::A(s)) => Some(s),
+        _ => None,
+      })?,
       body,
     })
   }
