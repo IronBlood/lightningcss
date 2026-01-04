@@ -8,7 +8,7 @@ use lightningcss::targets::{
   Features,
   Targets,
 };
-use napi::bindgen_prelude::{Either, Function, Uint8Array};
+use napi::bindgen_prelude::{Buffer, Either, Function};
 use napi::{Env, Unknown};
 use parcel_sourcemap::SourceMap;
 use std::sync::{Arc, RwLock};
@@ -235,7 +235,7 @@ pub struct TransformOptions {
   /** The filename being transformed. Used for error messages and source maps. */
   pub filename: String,
   /** The source code to transform. */
-  pub code: Uint8Array,
+  pub code: Buffer,
   /** Whether to enable minification. */
   pub minify: Option<bool>,
   /** Whether to output a source map. */
@@ -403,9 +403,9 @@ pub type Dependency = Either<ImportDependency, UrlDependency>;
 #[napi(object)]
 pub struct TransformResult {
   /** The transformed code. */
-  pub code: Uint8Array,
+  pub code: Buffer,
   /** The generated source map, if enabled. */
-  pub map: Option<Uint8Array>,
+  pub map: Option<Buffer>,
   /** CSS module exports, if enabled. */
   pub exports: Option<CSSModuleExports>,
   /** CSS module references, if `dashedIdents` is enabled. */
