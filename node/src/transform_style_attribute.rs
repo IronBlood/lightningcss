@@ -7,7 +7,7 @@ use lightningcss::{
   targets::{Features, Targets},
   visitor::Visit,
 };
-use napi::{bindgen_prelude::Uint8Array, Env};
+use napi::{bindgen_prelude::Buffer, Env};
 use napi_derive::napi;
 
 use crate::{
@@ -21,7 +21,7 @@ pub struct TransformAttributeOptions {
   /** The filename in which the style attribute appeared. Used for error messages and dependencies. */
   pub filename: Option<String>,
   /** The source code to transform. */
-  pub code: Uint8Array,
+  pub code: Buffer,
   /** Whether to enable minification. */
   pub minify: Option<bool>,
   /** The browser targets for the generated code. */
@@ -55,7 +55,7 @@ pub struct TransformAttributeOptions {
 #[napi(object)]
 pub struct TransformAttributeResult {
   /** The transformed code. */
-  pub code: Uint8Array,
+  pub code: Buffer,
   /** `@import` and `url()` dependencies, if enabled. */
   pub dependencies: Option<Vec<Dependency>>,
   /** Warnings that occurred during compilation. */
