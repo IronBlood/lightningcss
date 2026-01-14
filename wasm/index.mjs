@@ -28,7 +28,11 @@ export default async function init(input) {
       }
     }))
     .then(({instance}) => {
-      instance.exports.register_module();
+      for (const name of Object.keys(instance.exports)) {
+        if (name.startsWith('__napi_register__')) {
+          instance.exports[name]();
+        }
+      }
       env = new Environment(instance);
       bundleAsyncInternal = createBundleAsync(env);
       wasm = env.exports;

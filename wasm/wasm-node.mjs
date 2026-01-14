@@ -15,7 +15,13 @@ let instance = new WebAssembly.Instance(wasmModule, {
     },
   },
 });
-instance.exports.register_module();
+
+for (const name of Object.keys(instance.exports)) {
+  if (name.startsWith('__napi_register__')) {
+    instance.exports[name]();
+  }
+}
+
 let env = new Environment(instance);
 let wasm = env.exports;
 let bundleAsyncInternal = createBundleAsync(env);
