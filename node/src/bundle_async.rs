@@ -7,7 +7,7 @@ use napi::{
 use napi_derive::napi;
 
 use crate::{
-  bundle::BundleConfig,
+  bundle_common::BundleConfig,
   custom_at_rules::CustomAtRules,
   js_source_provider::{run_bundle_task, JsSourceProvider},
   transform::{Browsers, CSSModulesConfig, DependencyOptions, Drafts, NonStandard, PseudoClasses, Visitor},
