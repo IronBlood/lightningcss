@@ -10,7 +10,7 @@ use napi::{
 
 use crate::{
   at_rule_parser::AtRule,
-  bundle::{compile_bundle, BundleConfig},
+  bundle_common::{compile_bundle, BundleConfig},
   compile_error::CompileErrorOwned,
   transform::TransformResult,
   transformer::JsVisitor,
