@@ -8,18 +8,35 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["visitor", "bundler"]
+visitor = ["lightningcss/visitor"]
+bundler = ["dep:crossbeam-channel", "dep:rayon"]
+
 [dependencies]
-lightningcss-napi = { version = "0.4.4", path = "../napi", features = [
-  "bundler",
-  "visitor",
+serde = { version = "1.0.201", features = ["derive"] }
+serde-content = { version = "0.1.2", features = ["serde"] }
+serde_bytes = "0.11.5"
+cssparser = "0.33.0"
+lightningcss = { version = "1.0.0-alpha.68", path = "../", features = [
+  "nodejs",
+  "serde",
 ] }
-napi = { version = "2.15.4", default-features = false, features = [
-  "compat-mode",
-] }
-napi-derive = "2"
+parcel_sourcemap = { version = "2.1.1", features = ["json"] }
+serde-detach = "0.0.1"
+smallvec = { version = "1.7.0", features = ["union"] }
+napi = { version = "3.8.2", default-features = false, features = [
+  "napi4",
+  "napi9",
+  "serde-json",
+  "async",
+]}
+crossbeam-channel = { version = "0.5.6", optional = true }
+rayon = { version = "1.5.1", optional = true }
+napi-derive = "3.5.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 jemallocator = { version = "0.3.2", features = ["disable_initial_exec_tls"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.build-dependencies]
-napi-build = "1"
+napi-build = "2.3.1"
