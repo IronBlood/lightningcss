@@ -1,9 +1,9 @@
-use std::sync::Mutex;
+use std::{cell::UnsafeCell, path::PathBuf, str::FromStr};
 
-use lightningcss::{stylesheet::StyleSheet, visitor::Visit};
+use lightningcss::{bundler::SourceProvider, stylesheet::StyleSheet, visitor::Visit};
 use napi::{
-  bindgen_prelude::{FnArgs, Function},
-  Either, Env,
+  bindgen_prelude::{FnArgs, FromNapiValue, Function, FunctionRef},
+  Either, Env, JsValue, Unknown,
 };
 use napi_derive::napi;
 
@@ -12,12 +12,33 @@ use crate::{
   bundle_common::{compile_bundle, BundleConfig},
   compile_error::CompileErrorOwned,
   custom_at_rules::CustomAtRules,
-  js_source_provider::JsSourceProvider,
   transform::{
     Browsers, CSSModulesConfig, DependencyOptions, Drafts, NonStandard, PseudoClasses, TransformResult, Visitor,
   },
   transformer::get_visitor,
 };
+
+#[no_mangle]
+pub extern "C" fn napi_wasm_malloc(size: usize) -> *mut u8 {
+  use std::alloc::{alloc, Layout};
+  use std::mem;
+
+  let align = mem::align_of::<usize>();
+  if let Ok(layout) = Layout::from_size_align(size, align) {
+    unsafe {
+      if layout.size() > 0 {
+        let ptr = alloc(layout);
+        if !ptr.is_null() {
+          return ptr;
+        }
+      } else {
+        return align as *mut u8;
+      }
+    }
+  }
+
+  std::process::abort();
+}
 
 #[napi(object)]
 pub struct BundleOptions {
@@ -84,16 +105,92 @@ pub struct BundleOptions {
    * [css spec](https://drafts.csswg.org/css-syntax/#declaration-rule-list).
    */
   pub custom_at_rules: Option<CustomAtRules>, // TODO generic?
+  pub resolver: Resolver,
 }
 
 #[napi(object)]
 pub struct Resolver {
   /** Read the given file and return its contents as a string. */
-  #[napi(ts_type = "(file: string) => string")]
-  pub read: Option<Function<'static, String, String>>,
+  #[napi(ts_type = "(file: string) => string | Promise<string>")]
+  pub read: Function<'static, String, Unknown<'static>>,
   /** Read the given file and return its contents as a string. */
-  #[napi(ts_type = "(specifier: string, originatingFile: string) => string ")]
-  pub resolve: Option<Function<'static, FnArgs<(String, String)>, String>>,
+  #[napi(ts_type = "(specifier: string, originatingFile: string) => string | Promise<string> ")]
+  pub resolve: Option<Function<'static, FnArgs<(String, String)>, Unknown<'static>>>,
+}
+
+// This relies on Binaryen's Asyncify transform to allow Rust to call async JS functions from sync code.
+// See the comments in async.mjs for more details about how this works.
+extern "C" {
+  fn await_promise_sync(
+    promise: napi::sys::napi_value,
+    result: *mut napi::sys::napi_value,
+    error: *mut napi::sys::napi_value,
+  );
+}
+
+struct JsSourceProvider {
+  env: Env,
+  resolve: Option<FunctionRef<FnArgs<(String, String)>, Unknown<'static>>>,
+  read: FunctionRef<String, Unknown<'static>>,
+  inputs: UnsafeCell<Vec<*mut String>>,
+}
+
+unsafe impl Sync for JsSourceProvider {}
+unsafe impl Send for JsSourceProvider {}
+
+fn get_result(env: &Env, mut value: Unknown<'_>) -> napi::Result<String> {
+  if value.is_promise()? {
+    let mut result = std::ptr::null_mut();
+    let mut error = std::ptr::null_mut();
+    unsafe { await_promise_sync(value.raw(), &mut result, &mut error) };
+    if !error.is_null() {
+      let error = unsafe { Unknown::from_raw_unchecked(env.raw(), error) };
+      return Err(napi::Error::from(error));
+    }
+    if result.is_null() {
+      return Err(napi::Error::new(napi::Status::GenericFailure, "No result".to_string()));
+    }
+
+    value = unsafe { Unknown::from_raw_unchecked(env.raw(), result) };
+  }
+
+  String::from_unknown(value)
+}
+
+impl SourceProvider for JsSourceProvider {
+  type Error = napi::Error;
+
+  fn read<'a>(&'a self, file: &std::path::Path) -> Result<&'a str, Self::Error> {
+    let read = self.read.borrow_back(&self.env)?;
+    let source = read.call(file.to_str().unwrap().to_owned())?;
+    let source = get_result(&self.env, source)?;
+
+    // cache the result
+    let ptr = Box::into_raw(Box::new(source));
+    let inputs = unsafe { &mut *self.inputs.get() };
+    inputs.push(ptr);
+    // SAFETY: this is safe because the pointer is not dropped
+    // until the JsSourceProvider is, and we never remove from the
+    // list of pointers stored in the vector.
+    Ok(unsafe { &*ptr })
+  }
+
+  fn resolve(
+    &self,
+    specifier: &str,
+    originating_file: &std::path::Path,
+  ) -> Result<std::path::PathBuf, Self::Error> {
+    if let Some(resolve) = &self.resolve {
+      let resolve = resolve.borrow_back(&self.env)?;
+      let specifier = specifier.to_string();
+      let originating_file = originating_file.to_str().unwrap().to_owned();
+      let result = resolve.call((specifier, originating_file).into())?;
+      let result = get_result(&self.env, result)?;
+      Ok(PathBuf::from_str(result.as_str()).unwrap())
+    } else {
+      Ok(originating_file.with_file_name(specifier))
+    }
+  }
 }
 
 #[napi]
@@ -116,6 +213,7 @@ pub fn bundle(env: Env, options: BundleOptions) -> napi::bindgen_prelude::Result
     error_recovery,
     visitor,
     custom_at_rules,
+    resolver,
   } = options;
 
   let mut visitor = get_visitor(env, &visitor)?;
@@ -140,9 +238,13 @@ pub fn bundle(env: Env, options: BundleOptions) -> napi::bindgen_prelude::Result
   };
 
   let provider = JsSourceProvider {
-    resolve: None,
-    read: None,
-    inputs: Mutex::new(Vec::new()),
+    env: env.clone(),
+    read: resolver.read.create_ref()?,
+    resolve: match resolver.resolve {
+      Some(r) => Some(r.create_ref()?),
+      None => None,
+    },
+    inputs: UnsafeCell::new(Vec::new()),
   };
 
   // This is pretty silly, but works around a rust limitation that you cannot
@@ -154,13 +256,14 @@ pub fn bundle(env: Env, options: BundleOptions) -> napi::bindgen_prelude::Result
     f
   }
 
-  let result = compile_bundle(
+  let res = compile_bundle(
     &provider,
     &config,
     visitor.as_mut().map(|visitor| annotate(|stylesheet| stylesheet.visit(visitor))),
   );
-  match result {
-    Ok(v) => Ok(v),
+
+  match res {
+    Ok(res) => Ok(res),
     Err(err) => {
       let owned: CompileErrorOwned = err.into();
       Err(owned.into_js_error(env, None)?)
