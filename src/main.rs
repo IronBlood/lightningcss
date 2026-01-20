@@ -151,7 +151,7 @@ fn strip_prefix_case_insensitive(path: &Path, base: &Path) -> Option<PathBuf> {
 
 pub fn main() -> Result<(), std::io::Error> {
   let cli_args = CliArgs::parse();
-  let project_root = normalize_path_for_cli(std::env::current_dir()?);
+  let project_root = normalize_path_for_cli(fs::canonicalize(std::env::current_dir()?)?);
 
   // If we're given an input file, read from it and adjust its name.
   //
