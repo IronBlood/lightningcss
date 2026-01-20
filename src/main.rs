@@ -7,7 +7,7 @@ use parcel_sourcemap::SourceMap;
 use serde::Serialize;
 use std::borrow::Cow;
 use std::sync::{Arc, RwLock};
-use std::{ffi, fs, io, path::Path};
+use std::{env, ffi, fs, io, path::Path, path::PathBuf};
 
 #[cfg(target_os = "macos")]
 #[global_allocator]
@@ -71,9 +71,87 @@ struct SourceMapJson<'a> {
   names: &'a Vec<String>,
 }
 
+fn normalize_path_for_cli(path: PathBuf) -> PathBuf {
+  #[cfg(windows)]
+  {
+    // Strip extended-length prefix so diff_paths yields stable relative paths.
+    let raw = path.to_string_lossy();
+    if let Some(stripped) = raw.strip_prefix(r"\\?\UNC\") {
+      return PathBuf::from(format!(r"\\{}", stripped));
+    }
+    if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+      return PathBuf::from(stripped);
+    }
+  }
+
+  path
+}
+
+fn relative_path_for_cli(path: &Path, project_root: &Path) -> PathBuf {
+  #[cfg(windows)]
+  {
+    if let Some(rel) = strip_prefix_case_insensitive(path, project_root) {
+      return rel;
+    }
+  }
+
+  #[cfg(not(windows))]
+  {
+    if let Ok(rel) = path.strip_prefix(project_root) {
+      return rel.to_path_buf();
+    }
+  }
+
+  pathdiff::diff_paths(path, project_root).unwrap_or_else(|| {
+    path
+      .file_name()
+      .map(PathBuf::from)
+      .unwrap_or_else(|| path.to_path_buf())
+  })
+}
+
+#[cfg(windows)]
+fn strip_prefix_case_insensitive(path: &Path, base: &Path) -> Option<PathBuf> {
+  use std::path::Component;
+
+  let path_components: Vec<_> = path.components().collect();
+  let base_components: Vec<_> = base.components().collect();
+
+  if path_components.len() < base_components.len() {
+    return None;
+  }
+
+  for (path_component, base_component) in path_components.iter().zip(base_components.iter()) {
+    match (path_component, base_component) {
+      (Component::Prefix(p), Component::Prefix(b)) => {
+        if !p
+          .as_os_str()
+          .to_string_lossy()
+          .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+        {
+          return None;
+        }
+      }
+      (Component::RootDir, Component::RootDir) => {}
+      (Component::Normal(p), Component::Normal(b)) => {
+        if !p.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()) {
+          return None;
+        }
+      }
+      _ => return None,
+    }
+  }
+
+  let mut remainder = PathBuf::new();
+  for component in path_components.iter().skip(base_components.len()) {
+    remainder.push(component.as_os_str());
+  }
+  Some(remainder)
+}
+
 pub fn main() -> Result<(), std::io::Error> {
   let cli_args = CliArgs::parse();
-  let project_root = std::env::current_dir()?;
+  let project_root = normalize_path_for_cli(std::env::current_dir()?);
 
   // If we're given an input file, read from it and adjust its name.
   //
@@ -96,8 +174,8 @@ pub fn main() -> Result<(), std::io::Error> {
       .input_file
       .into_iter()
       .map(|ref f| -> Result<_, std::io::Error> {
-        let absolute_path = fs::canonicalize(f)?;
-        let filename = pathdiff::diff_paths(absolute_path, &project_root).unwrap();
+        let absolute_path = normalize_path_for_cli(fs::canonicalize(f)?);
+        let filename = relative_path_for_cli(&absolute_path, &project_root);
         let filename = filename.to_string_lossy().into_owned();
         let contents = fs::read_to_string(f)?;
         Ok((filename, contents))

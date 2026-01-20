@@ -297,7 +297,7 @@ impl<'a, 'b, 'c> CssModule<'a, 'b, 'c> {
           _ => Cow::Borrowed(*path),
         };
         hash(
-          &source.to_string_lossy(),
+          &normalize_path_for_hash_with_root(&source, project_root),
           matches!(config.pattern.segments[0], Segment::Hash),
         )
       })
@@ -544,5 +544,23 @@ pub(crate) fn hash(s: &str, at_start: bool) -> String {
     format!("_{}", hash)
   } else {
     hash
+  }
+}
+
+fn normalize_path_for_hash_with_root(path: &Path, project_root: Option<&Path>) -> String {
+  let normalized = path.to_string_lossy().replace('\\', "/");
+  let Some(project_root) = project_root else {
+    return normalized;
+  };
+
+  let mut root = project_root.to_string_lossy().replace('\\', "/");
+  if !root.ends_with('/') {
+    root.push('/');
+  }
+
+  if normalized.starts_with(&root) {
+    normalized[root.len()..].to_string()
+  } else {
+    normalized
   }
 }

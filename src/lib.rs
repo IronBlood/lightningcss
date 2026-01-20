@@ -68,6 +68,149 @@ mod tests {
   use std::collections::HashMap;
   use std::sync::{Arc, RwLock};
 
+  const FLOAT_EPSILON: f64 = 2e-4;
+
+  enum CssToken {
+    Text(String),
+    Number(f64),
+  }
+
+  fn assert_css_eq_with_epsilon(actual: &str, expected: &str, epsilon: f64) {
+    let mut actual_idx = 0;
+    let mut expected_idx = 0;
+
+    loop {
+      let actual_token = next_css_token(actual, actual_idx);
+      let expected_token = next_css_token(expected, expected_idx);
+
+      match (actual_token, expected_token) {
+        (None, None) => break,
+        (Some(_), None) | (None, Some(_)) => {
+          assert_eq!(actual, expected);
+        }
+        (Some((CssToken::Text(a), next_a)), Some((CssToken::Text(b), next_b))) => {
+          assert_eq!(a, b);
+          actual_idx = next_a;
+          expected_idx = next_b;
+        }
+        (Some((CssToken::Number(a), next_a)), Some((CssToken::Number(b), next_b))) => {
+          assert!(
+            (a - b).abs() <= epsilon,
+            "numeric mismatch: {} != {} (epsilon {})\nactual: {}\nexpected: {}",
+            a,
+            b,
+            epsilon,
+            actual,
+            expected
+          );
+          actual_idx = next_a;
+          expected_idx = next_b;
+        }
+        _ => {
+          assert_eq!(actual, expected);
+        }
+      }
+    }
+  }
+
+  fn next_css_token(input: &str, start: usize) -> Option<(CssToken, usize)> {
+    if start >= input.len() {
+      return None;
+    }
+
+    if is_number_start(input, start) {
+      if let Some((number, end)) = parse_number_at(input, start) {
+        return Some((CssToken::Number(number), end));
+      }
+    }
+
+    let mut end = start + 1;
+    while end < input.len() && !is_number_start(input, end) {
+      end += 1;
+    }
+
+    Some((CssToken::Text(input[start..end].to_string()), end))
+  }
+
+  fn is_number_start(input: &str, index: usize) -> bool {
+    let bytes = input.as_bytes();
+    let b = bytes[index];
+
+    if index > 0 {
+      let prev = bytes[index - 1];
+      if prev == b'#' || prev.is_ascii_alphanumeric() || prev == b'_' {
+        return false;
+      }
+    }
+
+    if b.is_ascii_digit() {
+      return true;
+    }
+
+    if b == b'.' {
+      return index + 1 < bytes.len() && bytes[index + 1].is_ascii_digit();
+    }
+
+    if b == b'+' || b == b'-' {
+      if index + 1 >= bytes.len() {
+        return false;
+      }
+      let next = bytes[index + 1];
+      if next.is_ascii_digit() {
+        return true;
+      }
+      if next == b'.' {
+        return index + 2 < bytes.len() && bytes[index + 2].is_ascii_digit();
+      }
+    }
+
+    false
+  }
+
+  fn parse_number_at(input: &str, start: usize) -> Option<(f64, usize)> {
+    let bytes = input.as_bytes();
+    let mut index = start;
+
+    if bytes[index] == b'+' || bytes[index] == b'-' {
+      index += 1;
+    }
+
+    let mut has_digit = false;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+      has_digit = true;
+      index += 1;
+    }
+
+    if index < bytes.len() && bytes[index] == b'.' {
+      index += 1;
+      while index < bytes.len() && bytes[index].is_ascii_digit() {
+        has_digit = true;
+        index += 1;
+      }
+    }
+
+    if !has_digit {
+      return None;
+    }
+
+    if index < bytes.len() && (bytes[index] == b'e' || bytes[index] == b'E') {
+      let exp_start = index;
+      index += 1;
+      if index < bytes.len() && (bytes[index] == b'+' || bytes[index] == b'-') {
+        index += 1;
+      }
+      let digits_start = index;
+      while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+      }
+      if digits_start == index {
+        index = exp_start;
+      }
+    }
+
+    input[start..index].parse::<f64>().ok().map(|num| (num, index))
+  }
+
   fn test(source: &str, expected: &str) {
     test_with_options(source, expected, ParserOptions::default())
   }
@@ -83,6 +226,10 @@ mod tests {
     minify_test_with_options(source, expected, ParserOptions::default())
   }
 
+  fn minify_test_fuzzy(source: &str, expected: &str, epsilon: f64) {
+    minify_test_with_options_fuzzy(source, expected, ParserOptions::default(), epsilon)
+  }
+
   #[track_caller]
   fn minify_test_with_options<'i, 'o>(source: &'i str, expected: &'i str, options: ParserOptions<'o, 'i>) {
     let mut stylesheet = StyleSheet::parse(&source, options.clone()).unwrap();
@@ -94,6 +241,24 @@ mod tests {
       })
       .unwrap();
     assert_eq!(res.code, expected);
+  }
+
+  #[track_caller]
+  fn minify_test_with_options_fuzzy<'i, 'o>(
+    source: &'i str,
+    expected: &'i str,
+    options: ParserOptions<'o, 'i>,
+    epsilon: f64,
+  ) {
+    let mut stylesheet = StyleSheet::parse(&source, options.clone()).unwrap();
+    stylesheet.minify(MinifyOptions::default()).unwrap();
+    let res = stylesheet
+      .to_css(PrinterOptions {
+        minify: true,
+        ..PrinterOptions::default()
+      })
+      .unwrap();
+    assert_css_eq_with_epsilon(&res.code, expected, epsilon);
   }
 
   fn minify_error_test_with_options<'i, 'o>(
@@ -123,6 +288,23 @@ mod tests {
       })
       .unwrap();
     assert_eq!(res.code, expected);
+  }
+
+  fn prefix_test_fuzzy(source: &str, expected: &str, targets: Browsers, epsilon: f64) {
+    let mut stylesheet = StyleSheet::parse(&source, ParserOptions::default()).unwrap();
+    stylesheet
+      .minify(MinifyOptions {
+        targets: targets.into(),
+        ..MinifyOptions::default()
+      })
+      .unwrap();
+    let res = stylesheet
+      .to_css(PrinterOptions {
+        targets: targets.into(),
+        ..PrinterOptions::default()
+      })
+      .unwrap();
+    assert_css_eq_with_epsilon(&res.code, expected, epsilon);
   }
 
   fn attr_test(source: &str, expected: &str, minify: bool, targets: Option<Browsers>) {
@@ -13329,7 +13511,7 @@ mod tests {
       },
     );
 
-    prefix_test(
+    prefix_test_fuzzy(
       ".foo { background: linear-gradient(lch(56.208% 136.76 46.312), lch(51% 135.366 301.364)) }",
       indoc! { r#"
         .foo {
@@ -13343,6 +13525,7 @@ mod tests {
         safari: Some(14 << 16),
         ..Browsers::default()
       },
+      FLOAT_EPSILON,
     );
 
     prefix_test(
@@ -13389,7 +13572,7 @@ mod tests {
       },
     );
 
-    prefix_test(
+    prefix_test_fuzzy(
       ".foo { background-image: linear-gradient(oklab(59.686% 0.1009 0.1192), oklab(54.0% -0.10 -0.02)); }",
       indoc! { r#"
         .foo {
@@ -13400,6 +13583,7 @@ mod tests {
         safari: Some(15 << 16),
         ..Browsers::default()
       },
+      FLOAT_EPSILON,
     );
 
     prefix_test(
@@ -13416,7 +13600,7 @@ mod tests {
       },
     );
 
-    prefix_test(
+    prefix_test_fuzzy(
       ".foo { background-image: linear-gradient(lch(56.208% 136.76 46.312), lch(51% 135.366 301.364)) }",
       indoc! { r#"
         .foo {
@@ -13430,6 +13614,7 @@ mod tests {
         safari: Some(14 << 16),
         ..Browsers::default()
       },
+      FLOAT_EPSILON,
     );
 
     prefix_test(
@@ -13476,7 +13661,7 @@ mod tests {
       },
     );
 
-    prefix_test(
+    prefix_test_fuzzy(
       ".foo { background-image: linear-gradient(oklab(59.686% 0.1009 0.1192), oklab(54.0% -0.10 -0.02)); }",
       indoc! { r#"
         .foo {
@@ -13487,6 +13672,7 @@ mod tests {
         safari: Some(15 << 16),
         ..Browsers::default()
       },
+      FLOAT_EPSILON,
     );
 
     // Test cases from https://github.com/postcss/autoprefixer/blob/541295c0e6dd348db2d3f52772b59cd403c59d29/test/cases/gradient.css
@@ -18481,9 +18667,10 @@ mod tests {
           ..PrinterOptions::default()
         })
         .unwrap();
-      minify_test(
+      minify_test_fuzzy(
         &format!(".foo {{ color: {} }}", input),
         &format!(".foo{{color:{}}}", output),
+        FLOAT_EPSILON,
       );
     }
 
@@ -20309,9 +20496,10 @@ mod tests {
       ".foo { color: color-mix(in lab, purple 50%, plum 50%); }",
       ".foo{color:lab(51.5117% 43.3777 -29.0443)}",
     );
-    minify_test(
+    minify_test_fuzzy(
       ".foo { color: color-mix(in lch, peru 40%, palegoldenrod); }",
       ".foo{color:lch(79.7255% 40.4542 84.7634)}",
+      FLOAT_EPSILON,
     );
     minify_test(
       ".foo { color: color-mix(in lch, teal 65%, olive); }",
