@@ -1,4 +1,4 @@
-[target.'cfg(target_env = "gnu")']
+[target.'cfg(all(target_env = "gnu", not(target_os = "windows")))']
 rustflags = ["-C", "link-args=-Wl,-z,nodelete"]
 
 [target.aarch64-unknown-linux-gnu]
