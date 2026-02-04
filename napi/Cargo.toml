@@ -24,9 +24,12 @@ lightningcss = { version = "1.0.0-alpha.70", path = "../", features = [
 parcel_sourcemap = { version = "2.1.1", features = ["json"] }
 serde-detach = "0.0.1"
 smallvec = { version = "1.7.0", features = ["union"] }
-napi = { version = "2", default-features = false, features = [
+napi = { version = "3", default-features = false, features = [
   "napi4",
   "napi5",
+  "napi9",
+  "async",
+  "compat-mode",
   "serde-json",
 ] }
 crossbeam-channel = { version = "0.5.6", optional = true }

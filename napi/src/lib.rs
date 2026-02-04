@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 #[cfg(feature = "bundler")]
 use at_rule_parser::AtRule;
 use at_rule_parser::{CustomAtRuleConfig, CustomAtRuleParser};
@@ -11,17 +12,17 @@ use lightningcss::stylesheet::{
   MinifyOptions, ParserFlags, ParserOptions, PrinterOptions, PseudoClasses, StyleAttribute, StyleSheet,
 };
 use lightningcss::targets::{Browsers, Features, Targets};
-use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
-use napi::{CallContext, Env, JsObject, JsUnknown};
+use napi::bindgen_prelude::{FromNapiValue, JsObjectValue, Null, ToNapiValue};
+use napi::{CallContext, Env, JsObject, Unknown};
 use parcel_sourcemap::SourceMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 mod at_rule_parser;
-#[cfg(feature = "bundler")]
-#[cfg(not(target_arch = "wasm32"))]
-mod threadsafe_function;
+// #[cfg(feature = "bundler")]
+// #[cfg(not(target_arch = "wasm32"))]
+// mod threadsafe_function;
 #[cfg(feature = "visitor")]
 mod transformer;
 mod utils;
@@ -51,7 +52,7 @@ struct TransformResult<'i> {
 }
 
 impl<'i> TransformResult<'i> {
-  fn into_js(self, env: Env) -> napi::Result<JsUnknown> {
+  fn into_js(self, env: Env) -> napi::Result<Unknown<'static>> {
     // Manually construct buffers so we avoid a copy and work around
     // https://github.com/napi-rs/napi-rs/issues/1124.
     let mut obj = env.create_object()?;
@@ -63,7 +64,7 @@ impl<'i> TransformResult<'i> {
         let buf = env.create_buffer_with_data(map)?;
         buf.into_raw().into_unknown()
       } else {
-        env.get_null()?.into_unknown()
+        Null.into_unknown(&env)?
       },
     )?;
     obj.set_named_property("exports", env.to_js_value(&self.exports)?)?;
@@ -75,24 +76,26 @@ impl<'i> TransformResult<'i> {
 }
 
 #[cfg(feature = "visitor")]
-fn get_visitor(env: Env, opts: &JsObject) -> Option<JsVisitor> {
+fn get_visitor(env: Env, opts: &JsObject) -> napi::Result<Option<JsVisitor>> {
   if let Ok(visitor) = get_named_property::<JsObject>(opts, "visitor") {
-    Some(JsVisitor::new(env, visitor))
+    let visitor = JsVisitor::new(env, visitor)?;
+    Ok(Some(visitor))
   } else {
-    None
+    Ok(None)
   }
 }
 
 #[cfg(not(feature = "visitor"))]
-fn get_visitor(_env: Env, _opts: &JsObject) -> Option<JsVisitor> {
-  None
+fn get_visitor(_env: Env, _opts: &JsObject) -> napi::Result<Option<JsVisitor>> {
+  Ok(None)
 }
 
-pub fn transform(ctx: CallContext) -> napi::Result<JsUnknown> {
+pub fn transform(ctx: CallContext) -> napi::Result<Unknown<'static>> {
   let opts = ctx.get::<JsObject>(0)?;
-  let mut visitor = get_visitor(*ctx.env, &opts);
+  let mut visitor = get_visitor(*ctx.env, &opts)?;
 
-  let config: Config = ctx.env.from_js_value(opts)?;
+  let opts_unknown = ctx.get::<Unknown>(0)?;
+  let config: Config = ctx.env.from_js_value(opts_unknown)?;
   let code = unsafe { std::str::from_utf8_unchecked(&config.code) };
   let res = compile(code, &config, &mut visitor);
 
@@ -102,11 +105,12 @@ pub fn transform(ctx: CallContext) -> napi::Result<JsUnknown> {
   }
 }
 
-pub fn transform_style_attribute(ctx: CallContext) -> napi::Result<JsUnknown> {
+pub fn transform_style_attribute(ctx: CallContext) -> napi::Result<Unknown> {
   let opts = ctx.get::<JsObject>(0)?;
-  let mut visitor = get_visitor(*ctx.env, &opts);
+  let mut visitor = get_visitor(*ctx.env, &opts)?;
 
-  let config: AttrConfig = ctx.env.from_js_value(opts)?;
+  let opts_unknown = ctx.get::<Unknown>(0)?;
+  let config: AttrConfig = ctx.env.from_js_value(opts_unknown)?;
   let code = unsafe { std::str::from_utf8_unchecked(&config.code) };
   let res = compile_attr(code, &config, &mut visitor);
 
@@ -122,17 +126,21 @@ mod bundle {
   use super::*;
   use crossbeam_channel::{self, Receiver, Sender};
   use lightningcss::bundler::FileProvider;
-  use napi::{Env, JsFunction, JsString, NapiRaw};
+  use napi::bindgen_prelude::{FnArgs, Function, Promise};
+  use napi::NapiValue;
+  use napi::{
+    threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
+    Env, JsValue, Status,
+  };
   use std::path::{Path, PathBuf};
-  use std::str::FromStr;
   use std::sync::Mutex;
-  use threadsafe_function::{ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
-  pub fn bundle(ctx: CallContext) -> napi::Result<JsUnknown> {
+  pub fn bundle(ctx: CallContext) -> napi::Result<Unknown> {
     let opts = ctx.get::<JsObject>(0)?;
-    let mut visitor = get_visitor(*ctx.env, &opts);
+    let mut visitor = get_visitor(*ctx.env, &opts)?;
 
-    let config: BundleConfig = ctx.env.from_js_value(opts)?;
+    let opts_unknown = ctx.get::<Unknown>(0)?;
+    let config: BundleConfig = ctx.env.from_js_value(opts_unknown)?;
     let fs = FileProvider::new();
 
     // This is pretty silly, but works around a rust limitation that you cannot
@@ -157,10 +165,24 @@ mod bundle {
   }
 
   // A SourceProvider which calls JavaScript functions to resolve and read files.
-  struct JsSourceProvider {
-    resolve: Option<ThreadsafeFunction<ResolveMessage>>,
-    read: Option<ThreadsafeFunction<ReadMessage>>,
-    inputs: Mutex<Vec<*mut String>>,
+  pub struct JsSourceProvider {
+    pub resolve: Option<
+      ThreadsafeFunction<FnArgs<(String, String)>, Unknown<'static>, FnArgs<(String, String)>, Status, false>,
+    >,
+    pub read: Option<ThreadsafeFunction<String, Unknown<'static>, String, Status, false>>,
+    pub inputs: Mutex<Vec<*mut String>>,
+  }
+
+  impl Drop for JsSourceProvider {
+    fn drop(&mut self) {
+      if let Ok(mut v) = self.inputs.lock() {
+        for ptr in v.drain(..) {
+          unsafe {
+            drop(Box::from_raw(ptr));
+          }
+        }
+      }
+    }
   }
 
   unsafe impl Sync for JsSourceProvider {}
@@ -177,12 +199,34 @@ mod bundle {
     fn read<'a>(&'a self, file: &Path) -> Result<&'a str, Self::Error> {
       let source = if let Some(read) = &self.read {
         CHANNEL.with(|channel| {
-          let message = ReadMessage {
-            file: file.to_str().unwrap().to_owned(),
-            tx: channel.0.clone(),
-          };
-
-          read.call(message, ThreadsafeFunctionCallMode::Blocking);
+          let tx = channel.0.clone();
+          let tx_cb = tx.clone();
+          let file = file.to_str().unwrap().to_owned();
+          let status =
+            read.call_with_return_value(file, ThreadsafeFunctionCallMode::Blocking, move |js_result, env| {
+              let ret = match js_result {
+                Ok(v) => v,
+                Err(e) => {
+                  let _ = tx_cb.send(Err(e));
+                  return Ok(());
+                }
+              };
+              if ret.is_promise()? {
+                let p = Promise::<String>::from_unknown(ret)?;
+                env.spawn_future(async move {
+                  let s = p.await;
+                  let _ = tx_cb.send(s);
+                  Ok::<(), napi::Error>(())
+                })?;
+              } else {
+                let s = String::from_unknown(ret);
+                let _ = tx_cb.send(s);
+              }
+              Ok(())
+            });
+          if status != Status::Ok {
+            let _ = tx.send(Err(napi::Error::new(status, "failed to call resolve()")));
+          }
           channel.1.recv().unwrap()
         })
       } else {
@@ -206,16 +250,38 @@ mod bundle {
     fn resolve(&self, specifier: &str, originating_file: &Path) -> Result<PathBuf, Self::Error> {
       if let Some(resolve) = &self.resolve {
         return CHANNEL.with(|channel| {
-          let message = ResolveMessage {
-            specifier: specifier.to_owned(),
-            originating_file: originating_file.to_str().unwrap().to_owned(),
-            tx: channel.0.clone(),
-          };
-
-          resolve.call(message, ThreadsafeFunctionCallMode::Blocking);
+          let arg: FnArgs<(String, String)> =
+            (specifier.to_owned(), originating_file.to_str().unwrap().to_owned()).into();
+          let tx = channel.0.clone();
+          let tx_cb = tx.clone();
+          let status =
+            resolve.call_with_return_value(arg, ThreadsafeFunctionCallMode::Blocking, move |js_result, env| {
+              let ret = match js_result {
+                Ok(v) => v,
+                Err(e) => {
+                  let _ = tx_cb.send(Err(e));
+                  return Ok(());
+                }
+              };
+              if ret.is_promise()? {
+                let p = Promise::<String>::from_unknown(ret)?;
+                env.spawn_future(async move {
+                  let s = p.await;
+                  let _ = tx_cb.send(s);
+                  Ok::<(), napi::Error>(())
+                })?;
+              } else {
+                let s = String::from_unknown(ret);
+                let _ = tx_cb.send(s);
+              }
+              Ok(())
+            });
+          if status != Status::Ok {
+            let _ = tx.send(Err(napi::Error::new(status, "failed to call resolve()")));
+          }
           let result = channel.1.recv().unwrap();
           match result {
-            Ok(result) => Ok(PathBuf::from_str(&result).unwrap()),
+            Ok(result) => Ok(PathBuf::from(result)),
             Err(e) => Err(e),
           }
         });
@@ -225,113 +291,58 @@ mod bundle {
     }
   }
 
-  struct ResolveMessage {
-    specifier: String,
-    originating_file: String,
-    tx: Sender<napi::Result<String>>,
-  }
-
-  struct ReadMessage {
-    file: String,
-    tx: Sender<napi::Result<String>>,
-  }
-
   struct VisitMessage {
     stylesheet: &'static mut StyleSheet<'static, 'static, AtRule<'static>>,
     tx: Sender<napi::Result<String>>,
   }
 
-  fn await_promise(env: Env, result: JsUnknown, tx: Sender<napi::Result<String>>) -> napi::Result<()> {
-    // If the result is a promise, wait for it to resolve, and send the result to the channel.
-    // Otherwise, send the result immediately.
-    if result.is_promise()? {
-      let result: JsObject = result.try_into()?;
-      let then: JsFunction = get_named_property(&result, "then")?;
-      let tx2 = tx.clone();
-      let cb = env.create_function_from_closure("callback", move |ctx| {
-        let res = ctx.get::<JsString>(0)?.into_utf8()?;
-        let s = res.into_owned()?;
-        tx.send(Ok(s)).unwrap();
-        ctx.env.get_undefined()
-      })?;
-      let eb = env.create_function_from_closure("error_callback", move |ctx| {
-        let res = ctx.get::<JsUnknown>(0)?;
-        tx2.send(Err(napi::Error::from(res))).unwrap();
-        ctx.env.get_undefined()
-      })?;
-      then.call(Some(&result), &[cb, eb])?;
+  pub struct Resolver {
+    /** Read the given file and return its contents as a string. */
+    pub read: Option<Function<'static, String, Unknown<'static>>>,
+    /** Read the given file and return its contents as a string. */
+    pub resolve: Option<Function<'static, FnArgs<(String, String)>, Unknown<'static>>>,
+  }
+
+  fn get_resolver(opts: &JsObject, _env: &Env) -> napi::Result<Option<Resolver>> {
+    let resolver_obj = match get_named_property::<JsObject>(&opts, "resolver") {
+      Ok(obj) => obj,
+      Err(_) => return Ok(None),
+    };
+
+    let read = if resolver_obj.has_named_property("read")? {
+      Some(resolver_obj.get_named_property::<Function<'_, String, Unknown<'_>>>("read")?)
     } else {
-      let result: JsString = result.try_into()?;
-      let utf8 = result.into_utf8()?;
-      let s = utf8.into_owned()?;
-      tx.send(Ok(s)).unwrap();
-    }
+      None
+    };
 
-    Ok(())
-  }
+    let resolve = if resolver_obj.has_named_property("resolve")? {
+      Some(
+        resolver_obj
+          .get_named_property::<Function<'static, FnArgs<(String, String)>, Unknown<'static>>>("resolve")?,
+      )
+    } else {
+      None
+    };
 
-  fn resolve_on_js_thread(ctx: ThreadSafeCallContext<ResolveMessage>) -> napi::Result<()> {
-    let specifier = ctx.env.create_string(&ctx.value.specifier)?;
-    let originating_file = ctx.env.create_string(&ctx.value.originating_file)?;
-    let result = ctx.callback.unwrap().call(None, &[specifier, originating_file])?;
-    await_promise(ctx.env, result, ctx.value.tx)
-  }
-
-  fn handle_error(tx: Sender<napi::Result<String>>, res: napi::Result<()>) -> napi::Result<()> {
-    match res {
-      Ok(_) => Ok(()),
-      Err(e) => {
-        tx.send(Err(e)).expect("send error");
-        Ok(())
-      }
-    }
-  }
-
-  fn resolve_on_js_thread_wrapper(ctx: ThreadSafeCallContext<ResolveMessage>) -> napi::Result<()> {
-    let tx = ctx.value.tx.clone();
-    handle_error(tx, resolve_on_js_thread(ctx))
-  }
-
-  fn read_on_js_thread(ctx: ThreadSafeCallContext<ReadMessage>) -> napi::Result<()> {
-    let file = ctx.env.create_string(&ctx.value.file)?;
-    let result = ctx.callback.unwrap().call(None, &[file])?;
-    await_promise(ctx.env, result, ctx.value.tx)
-  }
-
-  fn read_on_js_thread_wrapper(ctx: ThreadSafeCallContext<ReadMessage>) -> napi::Result<()> {
-    let tx = ctx.value.tx.clone();
-    handle_error(tx, read_on_js_thread(ctx))
+    Ok(Some(Resolver { read, resolve }))
   }
 
   pub fn bundle_async(ctx: CallContext) -> napi::Result<JsObject> {
     let opts = ctx.get::<JsObject>(0)?;
-    let visitor = get_visitor(*ctx.env, &opts);
+    let visitor = get_visitor(*ctx.env, &opts)?;
 
-    let config: BundleConfig = ctx.env.from_js_value(&opts)?;
+    let opts_unknown = ctx.get::<Unknown>(0)?;
+    let config: BundleConfig = ctx.env.from_js_value(opts_unknown)?;
 
-    if let Ok(resolver) = get_named_property::<JsObject>(&opts, "resolver") {
-      let read = if resolver.has_named_property("read")? {
-        let read = get_named_property::<JsFunction>(&resolver, "read")?;
-        Some(ThreadsafeFunction::create(
-          ctx.env.raw(),
-          unsafe { read.raw() },
-          0,
-          read_on_js_thread_wrapper,
-        )?)
-      } else {
-        None
+    if let Some(resolver) = get_resolver(&opts, ctx.env)? {
+      let read = match resolver.read {
+        Some(read) => Some(read.build_threadsafe_function().build()?),
+        _ => None,
       };
 
-      let resolve = if resolver.has_named_property("resolve")? {
-        let resolve = get_named_property::<JsFunction>(&resolver, "resolve")?;
-        Some(ThreadsafeFunction::create(
-          ctx.env.raw(),
-          unsafe { resolve.raw() },
-          0,
-          resolve_on_js_thread_wrapper,
-        )?)
-      } else {
-        None
+      let resolve = match resolver.resolve {
+        Some(resolve) => Some(resolve.build_threadsafe_function().build()?),
+        _ => None,
       };
 
       let provider = JsSourceProvider {
@@ -340,10 +351,10 @@ mod bundle {
         inputs: Mutex::new(Vec::new()),
       };
 
-      run_bundle_task(provider, config, visitor, *ctx.env)
+      run_bundle_task(provider, config, visitor, ctx.env)
     } else {
       let provider = FileProvider::new();
-      run_bundle_task(provider, config, visitor, *ctx.env)
+      run_bundle_task(provider, config, visitor, ctx.env)
     }
   }
 
@@ -355,27 +366,25 @@ mod bundle {
     provider: P,
     config: BundleConfig,
     visitor: Option<JsVisitor>,
-    env: Env,
+    env: &Env,
   ) -> napi::Result<JsObject>
   where
     P::Error: IntoJsError,
   {
     let (deferred, promise) = env.create_deferred()?;
 
+    let noop: Function<(), ()> = env.create_function_from_closure("lightningcssVisitNoop", |_ctx| Ok(()))?;
     let tsfn = if let Some(mut visitor) = visitor {
-      Some(ThreadsafeFunction::create(
-        env.raw(),
-        std::ptr::null_mut(),
-        0,
-        move |ctx: ThreadSafeCallContext<VisitMessage>| {
+      Some(
+        noop.build_threadsafe_function::<VisitMessage>().build_callback(move |ctx| {
           if let Err(err) = ctx.value.stylesheet.visit(&mut visitor) {
             ctx.value.tx.send(Err(err)).expect("send error");
             return Ok(());
           }
           ctx.value.tx.send(Ok(Default::default())).expect("send error");
           Ok(())
-        },
-      )?)
+        })?,
+      )
     } else {
       None
     };
@@ -413,6 +422,7 @@ mod bundle {
       });
     });
 
+    let promise = unsafe { JsObject::from_raw_unchecked(env.raw(), promise.raw()) };
     Ok(promise)
   }
 }
@@ -962,7 +972,7 @@ struct AttrResult<'i> {
 }
 
 impl<'i> AttrResult<'i> {
-  fn into_js(self, ctx: CallContext) -> napi::Result<JsUnknown> {
+  fn into_js(self, ctx: CallContext) -> napi::Result<Unknown> {
     // Manually construct buffers so we avoid a copy and work around
     // https://github.com/napi-rs/napi-rs/issues/1124.
     let mut obj = ctx.env.create_object()?;
@@ -1073,7 +1083,7 @@ impl<'i, E: IntoJsError + std::error::Error> CompileError<'i, E> {
       CompileError::PrinterError(Error { kind, .. }) => env.to_js_value(kind)?,
       CompileError::MinifyError(Error { kind, .. }) => env.to_js_value(kind)?,
       CompileError::BundleError(Error { kind, .. }) => env.to_js_value(kind)?,
-      _ => env.get_null()?.into_unknown(),
+      _ => Null.into_unknown(&env)?,
     };
 
     let (js_error, loc) = match self {
@@ -1082,23 +1092,25 @@ impl<'i, E: IntoJsError + std::error::Error> CompileError<'i, E> {
         kind: BundleErrorKind::ResolverError(e),
       }) => {
         // Add location info to existing JS error if available.
-        (e.into_js_error(env)?, loc)
+        (e.into_js_error(&env)?, loc)
       }
       CompileError::ParseError(Error { loc, .. })
       | CompileError::PrinterError(Error { loc, .. })
       | CompileError::MinifyError(Error { loc, .. })
       | CompileError::BundleError(Error { loc, .. }) => {
         // Generate an error with location information.
-        let syntax_error = env.get_global()?.get_named_property::<napi::JsFunction>("SyntaxError")?;
-        let reason = env.create_string_from_std(reason)?;
-        let obj = syntax_error.new_instance(&[reason])?;
-        (obj.into_unknown(), loc)
+        let syntax_error = env
+          .get_global()?
+          .get_named_property::<napi::bindgen_prelude::Function<String>>("SyntaxError")?;
+        let obj = syntax_error.new_instance(reason)?;
+        let unknown = obj.into_unknown(&env)?;
+        (unknown, loc)
       }
       _ => return Ok(self.into()),
     };
 
     if js_error.get_type()? == napi::ValueType::Object {
-      let mut obj: JsObject = unsafe { js_error.cast() };
+      let mut obj: JsObject = unsafe { js_error.cast()? };
       if let Some(loc) = loc {
         let line = env.create_int32((loc.line + 1) as i32)?;
         let col = env.create_int32(loc.column as i32)?;
@@ -1122,22 +1134,24 @@ impl<'i, E: IntoJsError + std::error::Error> CompileError<'i, E> {
 }
 
 trait IntoJsError {
-  fn into_js_error(self, env: Env) -> napi::Result<JsUnknown>;
+  fn into_js_error<'env>(self, env: &'env Env) -> napi::Result<Unknown<'env>>;
 }
 
 impl IntoJsError for std::io::Error {
-  fn into_js_error(self, env: Env) -> napi::Result<JsUnknown> {
+  fn into_js_error<'env>(self, env: &'env Env) -> napi::Result<Unknown<'env>> {
     let reason = self.to_string();
-    let syntax_error = env.get_global()?.get_named_property::<napi::JsFunction>("SyntaxError")?;
-    let reason = env.create_string_from_std(reason)?;
-    let obj = syntax_error.new_instance(&[reason])?;
-    Ok(obj.into_unknown())
+    let syntax_error = env
+      .get_global()?
+      .get_named_property::<napi::bindgen_prelude::Function<String>>("SyntaxError")?;
+    let obj = syntax_error.new_instance(reason)?;
+    let unknown = obj.into_unknown(env)?;
+    Ok(unknown)
   }
 }
 
 impl IntoJsError for napi::Error {
-  fn into_js_error(self, env: Env) -> napi::Result<JsUnknown> {
-    unsafe { JsUnknown::from_napi_value(env.raw(), ToNapiValue::to_napi_value(env.raw(), self)?) }
+  fn into_js_error<'env>(self, env: &'env Env) -> napi::Result<Unknown<'env>> {
+    unsafe { Unknown::from_napi_value(env.raw(), ToNapiValue::to_napi_value(env.raw(), self)?) }
   }
 }
 

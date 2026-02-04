@@ -1,22 +1,23 @@
+#![allow(deprecated)]
 #[cfg(target_os = "macos")]
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-use napi::{CallContext, JsObject, JsUnknown};
+use napi::{CallContext, JsObject, Unknown};
 use napi_derive::{js_function, module_exports};
 
 #[js_function(1)]
-fn transform(ctx: CallContext) -> napi::Result<JsUnknown> {
+fn transform(ctx: CallContext) -> napi::Result<Unknown> {
   lightningcss_napi::transform(ctx)
 }
 
 #[js_function(1)]
-fn transform_style_attribute(ctx: CallContext) -> napi::Result<JsUnknown> {
+fn transform_style_attribute(ctx: CallContext) -> napi::Result<Unknown> {
   lightningcss_napi::transform_style_attribute(ctx)
 }
 
 #[js_function(1)]
-pub fn bundle(ctx: CallContext) -> napi::Result<JsUnknown> {
+pub fn bundle(ctx: CallContext) -> napi::Result<Unknown> {
   lightningcss_napi::bundle(ctx)
 }
 
@@ -26,7 +27,8 @@ pub fn bundle_async(ctx: CallContext) -> napi::Result<JsObject> {
   lightningcss_napi::bundle_async(ctx)
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), module_exports)]
+#[cfg(not(target_arch = "wasm32"))]
+#[module_exports]
 fn init(mut exports: JsObject) -> napi::Result<()> {
   exports.create_named_method("transform", transform)?;
   exports.create_named_method("transformStyleAttribute", transform_style_attribute)?;

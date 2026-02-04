@@ -13,13 +13,16 @@ lightningcss-napi = { version = "0.4.7", path = "../napi", features = [
   "bundler",
   "visitor",
 ] }
-napi = { version = "2.15.4", default-features = false, features = [
+napi = { version = "3.8.2", default-features = false, features = [
+  "napi9",
   "compat-mode",
 ] }
-napi-derive = "2"
+napi-derive = { version = "3.5.1", features = [
+  "compat-mode",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 jemallocator = { version = "0.3.2", features = ["disable_initial_exec_tls"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.build-dependencies]
-napi-build = "1"
+napi-build = "2"
