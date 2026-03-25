@@ -982,6 +982,7 @@ dependencies = [
  "serde-content",
  "serde-detach",
  "serde_bytes",
+ "serde_json",
  "smallvec",
 ]
 

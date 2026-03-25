@@ -1,7 +1,11 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::sync::Mutex;
 
 use crossbeam_channel::{self, Receiver, Sender};
-use lightningcss::{bundler::SourceProvider, stylesheet::StyleSheet, visitor::Visit};
+use lightningcss::{
+  bundler::{ResolveResult, SourceProvider},
+  stylesheet::StyleSheet,
+  visitor::Visit,
+};
 use napi::{
   bindgen_prelude::{FnArgs, FromNapiValue, Function, Object, Promise},
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -18,6 +22,7 @@ use crate::{
 
 thread_local! {
   static CHANNEL: (Sender<napi::Result<String>>, Receiver<napi::Result<String>>) = crossbeam_channel::unbounded();
+    static RESOLVER_CHANNEL: (Sender<napi::Result<ResolveResult>>, Receiver<napi::Result<ResolveResult>>) = crossbeam_channel::unbounded();
 }
 pub struct JsSourceProvider {
   pub resolve: Option<
@@ -95,13 +100,9 @@ impl SourceProvider for JsSourceProvider {
     }
   }
 
-  fn resolve(
-    &self,
-    specifier: &str,
-    originating_file: &std::path::Path,
-  ) -> Result<std::path::PathBuf, Self::Error> {
+  fn resolve(&self, specifier: &str, originating_file: &std::path::Path) -> Result<ResolveResult, Self::Error> {
     if let Some(resolve) = &self.resolve {
-      return CHANNEL.with(|channel| {
+      return RESOLVER_CHANNEL.with(|channel| {
         let arg: FnArgs<(String, String)> =
           (specifier.to_owned(), originating_file.to_str().unwrap().to_owned()).into();
         let tx = channel.0.clone();
@@ -116,29 +117,27 @@ impl SourceProvider for JsSourceProvider {
               }
             };
             if ret.is_promise()? {
-              let p = Promise::<String>::from_unknown(ret)?;
+              let p = Promise::<serde_json::Value>::from_unknown(ret)?;
               env.spawn_future(async move {
-                let s = p.await;
-                let _ = tx_cb.send(s);
+                let result = p
+                  .await
+                  .and_then(|v| serde_json::from_value::<ResolveResult>(v).map_err(napi::Error::from));
+                let _ = tx_cb.send(result);
                 Ok::<(), napi::Error>(())
               })?;
             } else {
-              let s = String::from_unknown(ret);
-              let _ = tx_cb.send(s);
+              let result = env.from_js_value(ret);
+              let _ = tx_cb.send(result);
             }
             Ok(())
           });
         if status != Status::Ok {
           let _ = tx.send(Err(napi::Error::new(status, "failed to call resolve()")));
         }
-        let result = channel.1.recv().unwrap();
-        match result {
-          Ok(result) => Ok(PathBuf::from(result)),
-          Err(e) => Err(e),
-        }
+        channel.1.recv().unwrap()
       });
     }
-    Ok(originating_file.with_file_name(specifier))
+    Ok(originating_file.with_file_name(specifier).into())
   }
 }
 
