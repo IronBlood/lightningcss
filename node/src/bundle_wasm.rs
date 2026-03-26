@@ -1,6 +1,10 @@
-use std::{cell::UnsafeCell, path::PathBuf, str::FromStr};
+use std::cell::UnsafeCell;
 
-use lightningcss::{bundler::SourceProvider, stylesheet::StyleSheet, visitor::Visit};
+use lightningcss::{
+  bundler::{ResolveResult, SourceProvider},
+  stylesheet::StyleSheet,
+  visitor::Visit,
+};
 use napi::{
   bindgen_prelude::{FnArgs, FromNapiValue, Function, FunctionRef},
   Either, Env, JsValue, Unknown,
@@ -138,7 +142,7 @@ struct JsSourceProvider {
 unsafe impl Sync for JsSourceProvider {}
 unsafe impl Send for JsSourceProvider {}
 
-fn get_result(env: &Env, mut value: Unknown<'_>) -> napi::Result<String> {
+fn get_result<'a>(env: &'a Env, mut value: Unknown<'a>) -> napi::Result<Unknown<'a>> {
   if value.is_promise()? {
     let mut result = std::ptr::null_mut();
     let mut error = std::ptr::null_mut();
@@ -154,7 +158,7 @@ fn get_result(env: &Env, mut value: Unknown<'_>) -> napi::Result<String> {
     value = unsafe { Unknown::from_raw_unchecked(env.raw(), result) };
   }
 
-  String::from_unknown(value)
+  Ok(value)
 }
 
 impl SourceProvider for JsSourceProvider {
@@ -164,6 +168,7 @@ impl SourceProvider for JsSourceProvider {
     let read = self.read.borrow_back(&self.env)?;
     let source = read.call(file.to_str().unwrap().to_owned())?;
     let source = get_result(&self.env, source)?;
+    let source = String::from_unknown(source)?;
 
     // cache the result
     let ptr = Box::into_raw(Box::new(source));
@@ -175,20 +180,17 @@ impl SourceProvider for JsSourceProvider {
     Ok(unsafe { &*ptr })
   }
 
-  fn resolve(
-    &self,
-    specifier: &str,
-    originating_file: &std::path::Path,
-  ) -> Result<std::path::PathBuf, Self::Error> {
+  fn resolve(&self, specifier: &str, originating_file: &std::path::Path) -> Result<ResolveResult, Self::Error> {
     if let Some(resolve) = &self.resolve {
       let resolve = resolve.borrow_back(&self.env)?;
       let specifier = specifier.to_string();
       let originating_file = originating_file.to_str().unwrap().to_owned();
       let result = resolve.call((specifier, originating_file).into())?;
       let result = get_result(&self.env, result)?;
-      Ok(PathBuf::from_str(result.as_str()).unwrap())
+      let result = self.env.from_js_value(result)?;
+      Ok(result)
     } else {
-      Ok(originating_file.with_file_name(specifier))
+      Ok(ResolveResult::File(originating_file.with_file_name(specifier)))
     }
   }
 }
